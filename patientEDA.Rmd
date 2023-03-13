@@ -1,0 +1,241 @@
+---
+title: "MidtermEDA"
+author: "William Donnell-Lonon"
+date: "2023-02-24"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+##loading useful libraries 
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(tidyverse)
+library(utils)
+library(dplyr)
+library(hexbin)
+library(lubridate)
+library(broom)
+library(broom.mixed)
+library(janitor)
+library(data.table)
+library(tidyr)
+library(table1)
+
+##read in patient data from .CSV
+
+patients_orig <- read.csv("/Users/williamlonon/Desktop/repos/Synthea/output/csv/df_arkansas/patients.csv")
+conditions_orig <- read.csv("/Users/williamlonon/Desktop/repos/Synthea/output/csv/df_arkansas/conditions.csv")
+observations_orig <- read.csv("/Users/williamlonon/Desktop/repos/Synthea/output/csv/df_arkansas/observations.csv")
+procedures_orig <- read.csv("/Users/williamlonon/Desktop/repos/Synthea/output/csv/df_arkansas/procedures.csv")
+organizations_orig <- read.csv("/Users/williamlonon/Desktop/repos/Synthea/output/csv/df_arkansas/organizations.csv")
+encounters_orig <- read.csv("/Users/williamlonon/Desktop/repos/Synthea/output/csv/df_arkansas/encounters.csv")
+
+
+AR_patients_orig <- patients_orig
+AR_conditions <-conditions_orig
+AR_observations <- observations_orig
+AR_procedures <- procedures_orig
+AR_organizations <- organizations_orig
+AR_encounters <- encounters_orig
+
+##DATAFRAMES SORTED IN EXCEL
+##used excel to create dataset that includes only organizations that include 'veteran' in the name
+vet_orgs <- read.csv("/Users/williamlonon/Desktop/repos/Synthea/output/csv/df_arkansas/vet_organizations.csv")
+
+##used excel to create dataset that includes only encounters from ID's in vet_orgs
+vet_encounters <- read.csv("/Users/williamlonon/Desktop/repos/Synthea/output/csv/df_arkansas/vet_encounters.csv")
+
+##used excel to create dataset that contains boolean VETERAN_STATUS
+AR_patients <- read.csv("/Users/williamlonon/Desktop/repos/Synthea/output/csv/df_arkansas/patients_vet_status.csv")
+
+##removes NA from dataframes 
+vet_orgs <- drop_na(vet_orgs)
+vet_encounters <- drop_na(vet_encounters)
+
+##calculates patient ages SOME DOB VALUES ARE OFF BY 100 YEARS
+AR_patients$DOB <- mdy(AR_patients$BIRTHDATE)
+AR_patients$AGE <- floor(as.numeric((mdy("1-1-2023") - AR_patients$DOB)/365.25))
+##some DOB are calculated to be 21st century when supposed to be 20th-- Fixes age calculation for incorrect ages
+for (age in 1:length(AR_patients$AGE)){
+  if (AR_patients$AGE[age] < 0){
+    AR_patients$AGE[age] = AR_patients$AGE[age]+100
+  }
+}
+AR_patients$DOD <- mdy(AR_patients$DEATHDATE)
+glimpse(AR_patients$AGE)
+
+##Keeping and renaming selected columns in AR_conditions
+AR_conditions$PATIENT_ID <- AR_conditions$PATIENT
+AR_conditions <- AR_conditions %>%
+  subset(select = c("START", "PATIENT_ID", "DESCRIPTION")) %>%
+  rename(CONDITION_START = "START", 
+         CONDITION_DESC = "DESCRIPTION")
+
+##Keeping and renaming selected columns in AR_patients
+AR_patients <- AR_patients %>% 
+  subset(select = c("Id", "RACE", "ETHNICITY", "AGE", "INCOME", "BIRTHDATE", "DEATHDATE", "VETERAN_STATUS","MARITAL", "GENDER", "CITY", "COUNTY", "HEALTHCARE_EXPENSES", "HEALTHCARE_COVERAGE")) %>%
+  rename(PATIENT_ID = "Id")
+AR_patients <- drop_na(AR_patients)
+
+##Keeping and renaming selected columns in AR_encounters
+AR_encounters <- AR_encounters %>%
+  subset(select = c("Id", "PATIENT", "START", "ENCOUNTERCLASS", "DESCRIPTION", "REASONDESCRIPTION", "BASE_ENCOUNTER_COST", "TOTAL_CLAIM_COST", "PAYER_COVERAGE")) %>%
+  rename(ENCOUNTER_DESC = "DESCRIPTION", 
+         ENCOUNTER_REASON_DESC = "REASONDESCRIPTION",
+         ENCOUNTER_START = "START", 
+         PATIENT_ID = "PATIENT",
+         ENCOUNTER_ID = "Id")
+
+##Keeping and renaming selected columns in AR_procedures
+AR_procedures <- AR_procedures %>%
+  subset(select = c("START", "PATIENT", "ENCOUNTER", "DESCRIPTION", "BASE_COST", "REASONDESCRIPTION")) %>%
+  rename(PROCEDURE_START = "START", 
+         PATIENT_ID = "PATIENT",
+         ENCOUNTER_ID = "ENCOUNTER", 
+         PROCEDURE_DESC = "DESCRIPTION",
+         PROCEDURE_BASE_COST = "BASE_COST",
+         PROCEDURE_REASON_DESC = "REASONDESCRIPTION")
+
+
+##joining AR_patients into AR_conditions by Patient ID
+ar_synthea_cleaned <- AR_conditions %>% full_join(AR_patients, by="PATIENT_ID")
+write.csv(ar_synthea_cleaned, "/Users/williamlonon/Desktop/repos/Synthea/output/csv/df_arkansas/ar_synthea_cleaaned.csv", row.names=FALSE)
+
+##split patients between vets and non-vets
+veterans <- filter(AR_patients, VETERAN_STATUS=='TRUE')
+non_veterans <-filter(AR_patients, VETERAN_STATUS=='FALSE')
+
+##calculating mean veteran age
+mean_vet_age <- mean(veterans$AGE)
+mean_vet_age
+
+##calculating mean non-veteran age
+mean_nonvet_age <- mean(non_veterans$AGE)
+mean_nonvet_age
+
+##create patients list for all patients who have deathdate (147 dead homies)
+dead_homies <- AR_patients %>%
+  filter( !(DEATHDATE == ""))
+
+##calculating average veteran lifespan
+dead_vets <- filter(dead_homies, VETERAN_STATUS=='TRUE')
+mean_vet_lifespan <- mean(dead_vets$AGE)
+mean_vet_lifespan
+
+##calculating average non-veteran lifespan
+dead_nonvets <- filter(dead_homies, VETERAN_STATUS=='FALSE')
+mean_nonvet_lifespan <- mean(dead_nonvets$AGE)
+mean_nonvet_lifespan
+```
+
+```{r}
+##EDA GRAPHS----------------------------------------------------------------------------------------------------------------------------------
+##Income distribution by race
+gg_ar_income <- AR_patients%>%
+  ggplot(aes(x=INCOME, fill=RACE)) + geom_histogram() + labs(x="Income", y="Amount of patients")+ 
+  scale_x_continuous(breaks=seq(0,10000000,100000),labels = function(x) format(x, big.mark = ",", scientific = FALSE))+ theme(axis.text.x = element_text(angle =- 45, hjust = 0)) + ggtitle("Income distributions by race")
+gg_ar_income
+##Income caps off for most of the population around 250,000. Income beyond 250,000 can be considered outliar data. Data can be split into two graphs for data > 250k and data < 250k
+
+##Race distribution of Arkansans
+gg_ar_raceByGender <- AR_patients %>%
+ggplot(aes(x=GENDER, fill=factor(RACE, levels=c('native', 'other', 'asian', 'hawaiian', 'black', 'white')))) + geom_bar()+labs(x= "Genders", y="Number of patients") + guides(fill=guide_legend(title="Race"))
+gg_ar_raceByGender
+
+##Race divided evenly by gender. 
+gg_ar_race <-AR_patients %>%
+  ggplot(aes(x=factor(RACE, levels=c('native', 'other', 'asian', 'hawaiian', 'black', 'white')), fill = RACE)) + geom_bar()
+gg_ar_race
+
+##Healthcare expenditure distribution of Arkansans
+gg_ar_expensesByGender <- AR_patients%>%
+  ggplot(aes(x=HEALTHCARE_EXPENSES, fill=GENDER)) + geom_histogram() + 
+  scale_x_continuous(breaks=seq(0,120000000,1000000),labels = function(x) format(x, big.mark = ",", scientific = FALSE))  +labs(x= "Healthcare Expenses", y="Number of Patients") + theme(axis.text.x = element_text(angle =- 45, hjust = 0))
+gg_ar_expensesByGender
+##Same inequality as in graph 1: Can split data into two graphs for data < 2,500,000 and data > 2,500,000
+
+##Healthcare Coverage by gender
+gg_ar_coverageByGender <-AR_patients%>%
+  ggplot(aes(x=HEALTHCARE_COVERAGE, fill = GENDER)) + geom_histogram()+ 
+  scale_x_continuous(breaks=seq(0,120000000,1000000),labels = function(x) format(x, big.mark = ",", scientific = FALSE))  +labs(x= "Healthcare Coverage", y="Number of Patients") + theme(axis.text.x = element_text(angle =- 45, hjust = 0)) 
+gg_ar_coverageByGender
+```
+
+```{r}
+##HYPOTHESIS TESTING--------------------------------------------------------------------------------------------------------------------------
+
+##Veteran Population Gender Distribution
+gg_ar_vet_pop <- AR_patients %>%
+  ggplot(aes(x=VETERAN_STATUS, fill = GENDER)) + geom_bar()  + labs(x="Veteran Status", y="Number of patients") + ggtitle("Veterans vs. Non-Veterans by Gender")  + guides(fill=guide_legend(title="Gender"))
+gg_ar_vet_pop
+
+##Substance Abuse-----------------------------------------------------------------------------------------------------------------------------
+
+##drug misusers
+gg_ar_drugMisuse <- filter(ar_synthea_cleaned,CONDITION_DESC=='Misuses drugs (finding)') %>%
+  ggplot(aes(x=VETERAN_STATUS, fill = GENDER)) + geom_bar() + labs(x='Veteran Status', y='Number of Patients') + ggtitle("Drug Misuse vs. Veteran Status")
+gg_ar_drugMisuse
+##Veterans account for less accounts of drug misuse compared to non-veterans, proportion is less
+
+
+##Opioid Users
+gg_ar_opioidsVsVet <- filter(ar_synthea_cleaned,CONDITION_DESC=='Opioid abuse (disorder)') %>%
+  ggplot(aes(x=VETERAN_STATUS, fill = GENDER)) + geom_bar() + labs(x='Veteran Status', y='Number of Patients') + ggtitle("Opioid abuse vs. Veteran Status")
+gg_ar_opioidsVsVet
+##There are only 6 patients who have opioid use disorder, and 4 of them are veterans. Most opioid addicts are men.
+
+
+##Hardcore alcoholics
+gg_ar_alcoholismVsVet <- filter(ar_synthea_cleaned, CONDITION_DESC == 'Alcoholism') %>%
+  ggplot(aes(x=VETERAN_STATUS, fill = GENDER)) + geom_bar()  + labs(x='Veteran Status', y='Number of Patients') + ggtitle("Alcoholism vs Veteran Status")
+gg_ar_alcoholismVsVet
+##there are only 5 patients who meet the conditions of full-blown alcoholism, and 4 of them are veterans. 
+
+
+##drug overdoses
+gg_ar_drugOverdoses <- filter(ar_synthea_cleaned,CONDITION_DESC=='Drug overdose') %>%
+  ggplot(aes(x=VETERAN_STATUS, fill = GENDER)) + geom_bar() + labs(x='Veteran Status', y='Number of Overdoses') + ggtitle("Drug Overdose vs. Veteran Status")
+gg_ar_drugOverdoses
+##The proportion of overdoses is actually lower for veterans than non-veterans
+
+
+##unemployment
+gg_ar_unemployment <- filter(ar_synthea_cleaned, CONDITION_DESC == 'Unemployed (finding)') %>%
+  ggplot(aes(x=VETERAN_STATUS, fill = RACE)) + geom_bar() + labs(x='Veteran Status', y='Patients experiencing Unemployment') + ggtitle("Unemploymet vs. Veteran Status")
+gg_ar_unemployment
+##120 total unemployed persons. Roughly 10% of total population. More women are unemployed. Stay-at-home moms?
+
+
+##notinworkforce
+gg_ar_notinworkforce <- filter(ar_synthea_cleaned, CONDITION_DESC == 'Not in labor force (finding)') %>%
+  ggplot(aes(x=VETERAN_STATUS, fill = RACE)) + geom_bar() + labs(x='Veteran Status', y='Patients not in labor force') + ggtitle("Patients not in Workforce vs. Veteran Status")
+gg_ar_notinworkforce
+```
+
+```{r}
+##Income distribution of Californians
+CA_patients%>%
+  ggplot(aes(x=INCOME, fill=RACE)) + geom_histogram() + labs(x="Income", y="Amount of patients")+ 
+  scale_x_continuous(breaks=seq(0,10000000,100000),labels = function(x) format(x, big.mark = ",", scientific = FALSE))+ theme(axis.text.x = element_text(angle =- 45, hjust = 0))
+##Income caps off for most of the population around 250,000. Income beyond 250,000 can be considered outlier data. Data can be split into two graphs for data > 250k and data < 250k
+
+##Race distribution of Californians
+ggplot(CA_patients, aes(x=GENDER, fill=RACE)) + geom_bar()+labs(x= "Genders", y="Amount of patients")
+##Most patients make less than $250,000 a year in income, with many . Patients that fall higher may be considered outliers. 
+
+##Healthcare expenditure distribution of Californians
+CA_patients%>%
+  ggplot(aes(x=HEALTHCARE_EXPENSES, fill=GENDER)) + geom_histogram() + 
+  scale_x_continuous(breaks=seq(0,120000000,1000000),labels = function(x) format(x, big.mark = ",", scientific = FALSE))  +labs(x= "Healthcare Expenses", y="Count") + theme(axis.text.x = element_text(angle =- 45, hjust = 0))
+##Same inequality as in graph 1: Can split data into two graphs for data < 2,500,000 and data > 2,500,000
+
+##Healthcare coverage distribution of Californians
+CA_patients%>%
+  ggplot(aes(x=HEALTHCARE_COVERAGE, fill = GENDER)) + geom_histogram()+ 
+  scale_x_continuous(breaks=seq(0,120000000,1000000),labels = function(x) format(x, big.mark = ",", scientific = FALSE))  +labs(x= "Healthcare Coverage", y="Number of Patients") + theme(axis.text.x = element_text(angle =- 45, hjust = 0))
+##Significantly higher range of healthcare coverage compared to Arkansas
+```
+
+
+
+
